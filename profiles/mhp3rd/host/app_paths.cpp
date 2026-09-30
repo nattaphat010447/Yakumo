@@ -10,6 +10,7 @@
 #include <windows.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <TargetConditionals.h>
 #elif defined(MHP3RD_ANDROID_APP)
 #include <dlfcn.h>
 #endif
@@ -57,8 +58,15 @@ std::filesystem::path &bundled_resource_directory() {
 
 // Yakumo.app/Contents when the executable runs from Yakumo.app/Contents/MacOS,
 // empty otherwise (and on other systems).
+//
+// NOTE (iOS, unverified: no Apple toolchain was available to build or run
+// this): an iOS app bundle has no Contents/MacOS nesting, so this deliberately
+// only fires under TARGET_OS_OSX. iOS falls through to shipped_directory()'s
+// plain "next to the executable" branch below, which matches iOS's flat
+// Yakumo.app/ layout (Yakumo.app/overlays/, Yakumo.app/fonts/) if the app is
+// packaged that way; this has not been confirmed against a real iOS bundle.
 std::filesystem::path app_bundle_contents(const std::filesystem::path &executable_dir) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) && defined(TARGET_OS_OSX) && TARGET_OS_OSX
     if (executable_dir.filename() == "MacOS" && executable_dir.parent_path().filename() == "Contents")
         return executable_dir.parent_path();
 #endif

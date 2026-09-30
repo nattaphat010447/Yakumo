@@ -203,7 +203,27 @@ else()
     # Platform settings that do not change what is built: where macOS finds the
     # libraries (the executable's rpath) and the compiler to use.
     set(_mhp3rd_ffmpeg_flags ${MHP3RD_FFMPEG_CONFIGURE_FLAGS})
-    if(APPLE)
+    if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        # iOS: cross-compile arm64 against the iphoneos SDK and produce static
+        # libraries. iOS restricts unsigned dylib loading; FFmpeg is linked
+        # directly into the executable instead of shipped as shared libraries.
+        list(REMOVE_ITEM _mhp3rd_ffmpeg_flags --enable-shared --disable-static)
+        list(APPEND _mhp3rd_ffmpeg_flags --disable-shared --enable-static)
+        execute_process(COMMAND xcrun --sdk iphoneos --show-sdk-path
+            OUTPUT_VARIABLE _mhp3rd_ios_sysroot OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(COMMAND xcrun --sdk iphoneos -f clang
+            OUTPUT_VARIABLE _mhp3rd_ios_cc OUTPUT_STRIP_TRAILING_WHITESPACE)
+        set(_mhp3rd_ios_min "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        if(NOT _mhp3rd_ios_min)
+            set(_mhp3rd_ios_min "16.0")
+        endif()
+        list(APPEND _mhp3rd_ffmpeg_flags
+            --enable-cross-compile --arch=arm64 --target-os=darwin
+            "--cc=${_mhp3rd_ios_cc}"
+            "--sysroot=${_mhp3rd_ios_sysroot}"
+            "--extra-cflags=-arch arm64 -miphoneos-version-min=${_mhp3rd_ios_min}"
+            "--extra-ldflags=-arch arm64 -miphoneos-version-min=${_mhp3rd_ios_min}")
+    elseif(APPLE)
         list(APPEND _mhp3rd_ffmpeg_flags --install-name-dir=@rpath)
         if(CMAKE_OSX_DEPLOYMENT_TARGET)
             list(APPEND _mhp3rd_ffmpeg_flags
@@ -270,40 +290,53 @@ else()
 
     # The libraries go to lib/ next to the executable, under the names the
     # loader looks for; the executable's rpath points there.
+    # On iOS FFmpeg is built as static archives and linked directly into the
+    # executable — no staging to bin/lib and no rpath needed.
     set(_mhp3rd_ffmpeg_lib "${_mhp3rd_ffmpeg_bin}/lib")
     add_library(mhp3rd_ffmpeg INTERFACE)
-    set(_versions ${MHP3RD_FFMPEG_SOVERSIONS})
-    while(_versions)
-        list(POP_FRONT _versions lib soversion)
-        if(APPLE)
-            set(runtime_name "lib${lib}.${soversion}.dylib")
-        elseif(ANDROID)
-            set(runtime_name "lib${lib}.so")
-        else()
-            set(runtime_name "lib${lib}.so.${soversion}")
-        endif()
-        configure_file("${_mhp3rd_ffmpeg_prefix}/lib/${runtime_name}" "${_mhp3rd_ffmpeg_lib}/${runtime_name}" COPYONLY)
-        add_library(mhp3rd_ffmpeg_${lib} SHARED IMPORTED)
-        set_target_properties(mhp3rd_ffmpeg_${lib} PROPERTIES
-            IMPORTED_LOCATION "${_mhp3rd_ffmpeg_lib}/${runtime_name}")
-        if(NOT APPLE)
-            set_target_properties(mhp3rd_ffmpeg_${lib} PROPERTIES IMPORTED_SONAME "${runtime_name}")
-        endif()
-        target_link_libraries(mhp3rd_ffmpeg INTERFACE mhp3rd_ffmpeg_${lib})
-    endwhile()
     target_include_directories(mhp3rd_ffmpeg INTERFACE "${_mhp3rd_ffmpeg_prefix}/include")
-    configure_file("${_mhp3rd_ffmpeg_src}/COPYING.LGPLv2.1" "${_mhp3rd_ffmpeg_lib}/FFmpeg-COPYING.LGPLv2.1.txt" COPYONLY)
-    string(REPLACE ";" " " _mhp3rd_ffmpeg_flag_text "${MHP3RD_FFMPEG_CONFIGURE_FLAGS}")
-    _mhp3rd_ffmpeg_write_notice("${_mhp3rd_ffmpeg_lib}"
-        "The FFmpeg libraries here (libavcodec, libavutil) are FFmpeg ${MHP3RD_FFMPEG_VERSION},\n"
-        "unmodified, licensed under the GNU LGPL version 2.1 or later\n"
-        "(FFmpeg-COPYING.LGPLv2.1.txt). They are dynamically linked.\n\n"
-        "Source: ${MHP3RD_FFMPEG_URL}\n"
-        "SHA-256: ${MHP3RD_FFMPEG_SHA256}\n"
-        "Configured with: ${_mhp3rd_ffmpeg_flag_text}\n")
-    set(MHP3RD_FFMPEG_RPATH "$ORIGIN/lib")
-    if(APPLE)
-        set(MHP3RD_FFMPEG_RPATH "@loader_path/lib")
+    set(_versions ${MHP3RD_FFMPEG_SOVERSIONS})
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        while(_versions)
+            list(POP_FRONT _versions lib soversion)
+            add_library(mhp3rd_ffmpeg_${lib} STATIC IMPORTED)
+            set_target_properties(mhp3rd_ffmpeg_${lib} PROPERTIES
+                IMPORTED_LOCATION "${_mhp3rd_ffmpeg_prefix}/lib/lib${lib}.a")
+            target_link_libraries(mhp3rd_ffmpeg INTERFACE mhp3rd_ffmpeg_${lib})
+        endwhile()
+    else()
+        file(MAKE_DIRECTORY "${_mhp3rd_ffmpeg_lib}")
+        while(_versions)
+            list(POP_FRONT _versions lib soversion)
+            if(APPLE)
+                set(runtime_name "lib${lib}.${soversion}.dylib")
+            elseif(ANDROID)
+                set(runtime_name "lib${lib}.so")
+            else()
+                set(runtime_name "lib${lib}.so.${soversion}")
+            endif()
+            configure_file("${_mhp3rd_ffmpeg_prefix}/lib/${runtime_name}" "${_mhp3rd_ffmpeg_lib}/${runtime_name}" COPYONLY)
+            add_library(mhp3rd_ffmpeg_${lib} SHARED IMPORTED)
+            set_target_properties(mhp3rd_ffmpeg_${lib} PROPERTIES
+                IMPORTED_LOCATION "${_mhp3rd_ffmpeg_lib}/${runtime_name}")
+            if(NOT APPLE)
+                set_target_properties(mhp3rd_ffmpeg_${lib} PROPERTIES IMPORTED_SONAME "${runtime_name}")
+            endif()
+            target_link_libraries(mhp3rd_ffmpeg INTERFACE mhp3rd_ffmpeg_${lib})
+        endwhile()
+        configure_file("${_mhp3rd_ffmpeg_src}/COPYING.LGPLv2.1" "${_mhp3rd_ffmpeg_lib}/FFmpeg-COPYING.LGPLv2.1.txt" COPYONLY)
+        string(REPLACE ";" " " _mhp3rd_ffmpeg_flag_text "${MHP3RD_FFMPEG_CONFIGURE_FLAGS}")
+        _mhp3rd_ffmpeg_write_notice("${_mhp3rd_ffmpeg_lib}"
+            "The FFmpeg libraries here (libavcodec, libavutil) are FFmpeg ${MHP3RD_FFMPEG_VERSION},\n"
+            "unmodified, licensed under the GNU LGPL version 2.1 or later\n"
+            "(FFmpeg-COPYING.LGPLv2.1.txt). They are dynamically linked.\n\n"
+            "Source: ${MHP3RD_FFMPEG_URL}\n"
+            "SHA-256: ${MHP3RD_FFMPEG_SHA256}\n"
+            "Configured with: ${_mhp3rd_ffmpeg_flag_text}\n")
+        set(MHP3RD_FFMPEG_RPATH "$ORIGIN/lib")
+        if(APPLE)
+            set(MHP3RD_FFMPEG_RPATH "@loader_path/lib")
+        endif()
     endif()
     set(MHP3RD_HAS_FFMPEG ON)
     message(STATUS "mhp3rd: bundled FFmpeg ${MHP3RD_FFMPEG_VERSION} (LGPL, atrac3 atrac3p h264); music and movies enabled")

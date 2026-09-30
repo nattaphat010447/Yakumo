@@ -762,11 +762,58 @@ if(MSVC)
 endif()
 
 # Chained AOT calls nest native frames; give the guest-executing main thread
-# the same 64 MiB stack the Windows profiles use.
+# the same 64 MiB stack the Windows profiles use. iOS does not support the
+# ld64 -stack_size flag; the default per-thread stack is used there instead.
 if(MSVC)
     target_link_options(Yakumo PRIVATE /STACK:67108864)
-elseif(APPLE)
+elseif(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_options(Yakumo PRIVATE "LINKER:-stack_size,0x4000000")
+endif()
+
+# iOS app bundle: properties, required Apple frameworks, and MoltenVK (which
+# provides Vulkan on Metal; on iOS it is linked as an embedded framework rather
+# than loaded through the Vulkan ICD loader used on macOS).
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(MHP3RD_IOS_MOLTENVK_XCFRAMEWORK "" CACHE PATH
+        "Path to MoltenVK.xcframework (iOS slice). Download MoltenVK 1.4.2 "
+        "from https://github.com/KhronosGroup/MoltenVK/releases and point "
+        "this variable at the extracted MoltenVK.xcframework directory.")
+    if(NOT MHP3RD_IOS_MOLTENVK_XCFRAMEWORK)
+        message(WARNING
+            "mhp3rd: MHP3RD_IOS_MOLTENVK_XCFRAMEWORK is not set; the iOS "
+            "build will not find Vulkan. Set it to the path of "
+            "MoltenVK.xcframework from the MoltenVK 1.4.2 release.")
+    endif()
+    set(_mhp3rd_ios_deploy "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    if(NOT _mhp3rd_ios_deploy)
+        set(_mhp3rd_ios_deploy "16.0")
+    endif()
+    set_target_properties(Yakumo PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_INFO_PLIST
+            "${MHP3RD_PROFILE_DIR}/host/platform/ios/Info.plist"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "io.github.teamgdb.yakumo"
+        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "${_mhp3rd_ios_deploy}"
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "iPhone Developer"
+    )
+    target_link_libraries(Yakumo PRIVATE
+        "-framework Metal"
+        "-framework QuartzCore"
+        "-framework IOSurface"
+        "-framework GameController"
+        "-framework AudioToolbox"
+    )
+    if(MHP3RD_IOS_MOLTENVK_XCFRAMEWORK)
+        target_link_options(Yakumo PRIVATE
+            "-F${MHP3RD_IOS_MOLTENVK_XCFRAMEWORK}/ios-arm64"
+            "-framework" "MoltenVK")
+        target_include_directories(Yakumo PRIVATE
+            "${MHP3RD_IOS_MOLTENVK_XCFRAMEWORK}/ios-arm64/MoltenVK.framework/Headers")
+        set_target_properties(Yakumo PROPERTIES
+            XCODE_EMBED_FRAMEWORKS "${MHP3RD_IOS_MOLTENVK_XCFRAMEWORK}"
+            XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY YES)
+    endif()
 endif()
 
 # Recompiled overlay corpora, produced by tools/add_overlay.py. Each directory
